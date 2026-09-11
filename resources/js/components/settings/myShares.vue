@@ -15,7 +15,9 @@ import {
   ArrowLeftRight,
   FilePlus2,
   Files,
-  Copy
+  Copy,
+  ClipboardCopy,
+  Check
 } from 'lucide-vue-next'
 import { useToast } from 'vue-toastification'
 import { niceFileSize, niceDate, niceFileName, niceNumber } from '../../utils'
@@ -41,6 +43,23 @@ const addFilesShare = ref(null)
 const manageFilesShare = ref(null)
 const replaceFileShare = ref(null)
 const cloneShareTarget = ref(null)
+const copiedShareId = ref(null)
+
+const publicShareUrl = (share) => new URL(`/shares/${share.long_id}`, window.location.origin).href
+
+const copyPublicShareUrl = async (share) => {
+  try {
+    await navigator.clipboard.writeText(publicShareUrl(share))
+    copiedShareId.value = share.id
+    toast.success('Public share link copied')
+    setTimeout(() => {
+      if (copiedShareId.value === share.id) copiedShareId.value = null
+    }, 1500)
+  } catch (error) {
+    toast.error('Unable to copy the public share link')
+  }
+}
+
 
 onMounted(async () => {
   showDeletedShares.value = localStorage.getItem('showDeletedShares') === 'true'
@@ -195,10 +214,27 @@ defineExpose({
                 {{ share.name }}
               </strong>
             </div>
-            <a :href="`/shares/${share.long_id}`" target="_blank" class="share_long_id">
-              <SquareArrowOutUpRight />
-              {{ share.long_id }}
-            </a>
+            <div class="share-link-controls">
+              <a
+                :href="`/shares/${share.long_id}`"
+                target="_blank"
+                class="share_long_id"
+                :title="publicShareUrl(share)"
+              >
+                <SquareArrowOutUpRight />
+                {{ share.long_id }}
+              </a>
+              <button
+                type="button"
+                class="copy-share-link icon-only secondary"
+                title="Copy public share link"
+                :aria-label="`Copy public link for ${share.name}`"
+                @click="copyPublicShareUrl(share)"
+              >
+                <Check v-if="copiedShareId === share.id" />
+                <ClipboardCopy v-else />
+              </button>
+            </div>
             <div class="protection-status">
               <template v-if="share.password_protected">
                 <Lock />
@@ -408,8 +444,31 @@ defineExpose({
   }
 }
 
+.share-link-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+
+  .copy-share-link {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 5px;
+    margin: 0;
+
+    svg {
+      width: 1rem;
+      height: 1rem;
+      margin: 0;
+    }
+  }
+}
+
 .share_long_id {
-  display: block;
+  display: flex;
+  align-items: center;
+  margin-top: 0;
   font-size: 1rem;
   color: var(--panel-section-text-color);
   text-decoration: none;

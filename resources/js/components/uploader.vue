@@ -16,7 +16,8 @@ import {
   Clock9,
   Lock,
   LockOpen,
-  RotateCcw
+  RotateCcw,
+  Link2
 } from 'lucide-vue-next'
 import { niceFileSize, niceFileType, simpleUUID } from '../utils'
 import { getHealth, getMyProfile, uploadFilesInChunks, logout } from '../api'
@@ -987,6 +988,17 @@ const filesByDirectory = computed(() => {
               {{ $t('upload.files', 'Upload {value} files', { value: uploadBasket.length }) }}
             </template>
             <template v-if="uploadBasket.length === 0">{{ $t('No files added yet') }}</template>
+          </button>
+        </div>
+
+        <div v-if="shareUrl" class="ps-0 col-auto">
+          <button
+            class="icon-only secondary"
+            title="View or copy the last public share link"
+            aria-label="View or copy the last public share link"
+            @click="sharePanelVisible = true"
+          >
+            <Link2 />
           </button>
         </div>
 
