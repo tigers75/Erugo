@@ -136,6 +136,9 @@ Route::group([], function ($router) {
         //add files to existing share (multi-file)
         Route::post('/{id}/add-files', [UploadsController::class, 'addFilesToShare'])->name('shares.addFiles');
 
+        //remove one or more files from an existing share
+        Route::delete('/{id}/files', [SharesController::class, 'removeFiles'])->name('shares.removeFiles');
+
         //replace the single file in a single-file share
         Route::post('/{id}/replace-file', [UploadsController::class, 'replaceShareFile'])->name('shares.replaceFile');
 

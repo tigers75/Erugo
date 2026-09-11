@@ -19,6 +19,8 @@ use App\Services\SettingsService;
 use App\Services\PatternGenerator;
 use App\Jobs\cleanSpecificShares;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class SharesController extends Controller
 {
@@ -706,6 +708,169 @@ class SharesController extends Controller
     if ($sendEmail == 'true' && $share->user) {
       sendEmail::dispatch($share->user->email, shareDownloadedMail::class, ['share' => $share]);
     }
+  }
+
+
+  /**
+   * Remove one or more files from an existing share.
+   *
+   * File ids are resolved within the locked share, and physical files are moved
+   * to a staging directory before the database transaction is committed. This
+   * lets us restore them if the transaction fails. Removing a path from this
+   * share does not affect hard-linked paths belonging to cloned shares.
+   */
+  public function removeFiles(Request $request, $shareId)
+  {
+    $user = Auth::user();
+    if (!$user) {
+      return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 401);
+    }
+
+    $request->validate([
+      'file_ids'   => ['required', 'array', 'min:1'],
+      'file_ids.*' => ['required', 'integer', 'distinct'],
+    ]);
+
+    $share = Share::with('invite')->find($shareId);
+    if (!$share) {
+      return response()->json(['status' => 'error', 'message' => 'Share not found'], 404);
+    }
+
+    if (!$this->canManageShare($share, $user)) {
+      return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 401);
+    }
+
+    if ($share->status === 'deleted') {
+      return response()->json(['status' => 'error', 'message' => 'Share has been deleted'], 422);
+    }
+
+    if ($share->status === 'pending') {
+      return response()->json(['status' => 'error', 'message' => 'Share files are currently being rebuilt'], 409);
+    }
+
+    $fileIds = array_values(array_unique(array_map('intval', $request->input('file_ids'))));
+    $stagingDir = storage_path('app/share-deletions/' . Str::uuid());
+    $movedFiles = [];
+
+    DB::beginTransaction();
+
+    try {
+      $lockedShare = Share::whereKey($share->id)->lockForUpdate()->firstOrFail();
+      $files = File::where('share_id', $lockedShare->id)
+        ->whereIn('id', $fileIds)
+        ->get();
+
+      if ($files->count() !== count($fileIds)) {
+        DB::rollBack();
+        return response()->json([
+          'status' => 'error',
+          'message' => 'One or more files do not belong to this share',
+        ], 404);
+      }
+
+      $currentFileCount = File::where('share_id', $lockedShare->id)->count();
+      if ($currentFileCount - $files->count() < 1) {
+        DB::rollBack();
+        return response()->json([
+          'status' => 'error',
+          'message' => 'At least one file must remain. Delete the share instead.',
+        ], 422);
+      }
+
+      $shareDir = storage_path('app/shares/' . $lockedShare->path);
+      $shareDirReal = realpath($shareDir);
+
+      foreach ($files as $file) {
+        $relativePath = ($file->full_path ? trim(str_replace('\\', '/', $file->full_path), '/') . '/' : '') . $file->name;
+        $segments = explode('/', $relativePath);
+
+        if ($relativePath === '' || str_starts_with($relativePath, '/') || in_array('..', $segments, true)) {
+          throw new \RuntimeException('Unsafe file path stored for share file ' . $file->id);
+        }
+
+        $physicalPath = $shareDir . '/' . $relativePath;
+        if (!file_exists($physicalPath)) {
+          continue;
+        }
+
+        $physicalPathReal = realpath($physicalPath);
+        if (!$shareDirReal || !$physicalPathReal || !str_starts_with($physicalPathReal, $shareDirReal . DIRECTORY_SEPARATOR)) {
+          throw new \RuntimeException('Refusing to remove a file outside the share directory');
+        }
+
+        if (!is_dir($stagingDir) && !mkdir($stagingDir, 0750, true) && !is_dir($stagingDir)) {
+          throw new \RuntimeException('Unable to create file deletion staging directory');
+        }
+
+        $stagedPath = $stagingDir . '/' . $file->id;
+        if (!rename($physicalPathReal, $stagedPath)) {
+          throw new \RuntimeException('Unable to stage file for deletion');
+        }
+
+        $movedFiles[] = ['source' => $physicalPathReal, 'staged' => $stagedPath];
+      }
+
+      File::where('share_id', $lockedShare->id)->whereIn('id', $fileIds)->delete();
+
+      $lockedShare->size = $lockedShare->files()->sum('size');
+      $lockedShare->file_count = $lockedShare->files()->count();
+      $lockedShare->status = 'pending';
+      $lockedShare->save();
+
+      $zipPath = storage_path('app/shares/' . $lockedShare->path . '.zip');
+      if (is_file($zipPath) && !unlink($zipPath)) {
+        throw new \RuntimeException('Unable to invalidate the existing share archive');
+      }
+
+      DB::commit();
+      $share = $lockedShare;
+    } catch (\Throwable $e) {
+      if (DB::transactionLevel() > 0) {
+        DB::rollBack();
+      }
+
+      foreach (array_reverse($movedFiles) as $movedFile) {
+        $sourceDir = dirname($movedFile['source']);
+        if (!is_dir($sourceDir)) {
+          mkdir($sourceDir, 0750, true);
+        }
+        if (is_file($movedFile['staged'])) {
+          rename($movedFile['staged'], $movedFile['source']);
+        }
+      }
+
+      if (is_dir($stagingDir)) {
+        @rmdir($stagingDir);
+      }
+
+      Log::error('Failed to remove files from share', [
+        'share_id' => $shareId,
+        'file_ids' => $fileIds,
+        'error' => $e->getMessage(),
+      ]);
+
+      return response()->json([
+        'status' => 'error',
+        'message' => 'Failed to remove files from share',
+      ], 500);
+    }
+
+    foreach ($movedFiles as $movedFile) {
+      if (is_file($movedFile['staged'])) {
+        unlink($movedFile['staged']);
+      }
+    }
+    if (is_dir($stagingDir)) {
+      @rmdir($stagingDir);
+    }
+
+    CreateShareZip::dispatch($share);
+
+    return response()->json([
+      'status' => 'success',
+      'message' => 'Files removed from share',
+      'data' => ['share' => $share->fresh(['files'])],
+    ]);
   }
 
   /**
