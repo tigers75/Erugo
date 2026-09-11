@@ -1,5 +1,5 @@
 # Build Stage for PHP dependencies
-FROM php:8.3-cli-alpine AS composer
+FROM --platform=$BUILDPLATFORM php:8.3-cli-alpine AS composer
 WORKDIR /app
 RUN apk add --no-cache git unzip \
     && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
@@ -7,7 +7,7 @@ COPY . .
 RUN composer install --no-interaction --optimize-autoloader
 
 # Build Stage for Node.js dependencies and assets
-FROM node:20-alpine AS node
+FROM --platform=$BUILDPLATFORM node:20-alpine AS node
 WORKDIR /app
 COPY . .
 
