@@ -731,12 +731,12 @@ class SharesController extends Controller
       'file_ids.*' => ['required', 'integer', 'distinct'],
     ]);
 
-    $share = Share::with('invite')->find($shareId);
+    $share = Share::find($shareId);
     if (!$share) {
       return response()->json(['status' => 'error', 'message' => 'Share not found'], 404);
     }
 
-    if (!$this->canManageShare($share, $user)) {
+    if ($user->id !== $share->user_id && !$user->admin) {
       return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 401);
     }
 
