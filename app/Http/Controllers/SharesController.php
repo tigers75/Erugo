@@ -923,6 +923,15 @@ class SharesController extends Controller
 
     $originalFiles = $share->files()->get();
     $totalSize     = 0;
+    $originalZipPath = storage_path('app/shares/' . $share->path . '.zip');
+    $originalZip = null;
+
+    if (is_file($originalZipPath)) {
+      $candidateZip = new \ZipArchive();
+      if ($candidateZip->open($originalZipPath) === true) {
+        $originalZip = $candidateZip;
+      }
+    }
 
     foreach ($originalFiles as $file) {
       $subdir     = $file->full_path ? rtrim($file->full_path, '/') . '/' : '';
@@ -936,14 +945,50 @@ class SharesController extends Controller
       }
 
       $destFile = $destDir . '/' . $file->name;
+      $fileMaterialized = false;
 
       if (file_exists($sourcePath)) {
-        try {
-          link($sourcePath, $destFile);
-        } catch (\Throwable $e) {
-          // Cross-device hard-link failure — fall back to copy
-          copy($sourcePath, $destFile);
+        // Hard-link when possible; copy when source and destination are on
+        // different filesystems.
+        if (@link($sourcePath, $destFile) || copy($sourcePath, $destFile)) {
+          $fileMaterialized = true;
         }
+      }
+
+      // Shares created before file management support retained only their zip.
+      // Recover those files from the archive instead of creating an empty clone.
+      if (!$fileMaterialized && $originalZip) {
+        $zipEntry = $subdir . $file->name;
+        $sourceStream = $originalZip->getStream($zipEntry);
+        if ($sourceStream === false) {
+          $sourceStream = $originalZip->getStream($file->name);
+        }
+
+        if ($sourceStream !== false) {
+          $destinationStream = fopen($destFile, 'wb');
+          if ($destinationStream !== false) {
+            $fileMaterialized = stream_copy_to_stream($sourceStream, $destinationStream) !== false;
+            fclose($destinationStream);
+          }
+          fclose($sourceStream);
+        }
+      }
+
+      if (!$fileMaterialized) {
+        if ($originalZip) {
+          $originalZip->close();
+        }
+        $clone->status = 'failed';
+        $clone->save();
+        Log::error('Unable to materialize file while cloning share', [
+          'share_id' => $share->id,
+          'file_id' => $file->id,
+        ]);
+
+        return response()->json([
+          'status' => 'error',
+          'message' => 'A source file could not be read while cloning the share',
+        ], 422);
       }
 
       File::create([
@@ -958,6 +1003,10 @@ class SharesController extends Controller
       ]);
 
       $totalSize += $file->size;
+    }
+
+    if ($originalZip) {
+      $originalZip->close();
     }
 
     $clone->size       = $totalSize;
