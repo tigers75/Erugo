@@ -182,7 +182,12 @@ const handleUpload = async () => {
 
       <!-- Existing files: management mode -->
       <div v-if="mode === 'manage'" class="existing-file-list">
-        <div v-for="file in share.files" :key="file.id" class="existing-file-item">
+        <div
+          v-for="file in share.files"
+          :key="file.id"
+          class="existing-file-item"
+          :class="{ selected: selectedExistingFileIds.includes(file.id) }"
+        >
           <input
             type="checkbox"
             :checked="selectedExistingFileIds.includes(file.id)"
@@ -388,14 +393,33 @@ const handleUpload = async () => {
   align-items: center;
   gap: 8px;
   background: var(--panel-section-background-color-alt);
+  border: 2px solid transparent;
   border-radius: 6px;
   padding: 8px 10px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+
+  &.selected {
+    border-color: var(--primary-color, #4f6ef7);
+    background: rgba(79, 110, 247, 0.12);
+  }
 
   input[type="checkbox"] {
-    width: auto;
-    height: auto;
+    width: 20px;
+    height: 20px;
     margin: 0;
     flex-shrink: 0;
+    cursor: default !important;
+    accent-color: var(--primary-color, #4f6ef7);
+    outline: 1px solid rgba(128, 128, 128, 0.55);
+    outline-offset: 2px;
+
+    &:checked {
+      outline-color: var(--primary-color, #4f6ef7);
+    }
+
+    &:disabled {
+      cursor: default !important;
+    }
   }
 
   .file-name {
