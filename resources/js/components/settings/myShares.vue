@@ -14,6 +14,7 @@ import {
   LockOpen,
   ArrowLeftRight,
   FilePlus2,
+  Files,
   Copy
 } from 'lucide-vue-next'
 import { useToast } from 'vue-toastification'
@@ -36,6 +37,7 @@ const shares = ref([])
 const showDeletedShares = ref(false)
 const { value: allowFileReplacement } = useSetting('allow_file_replacement', 'system.shares', '1')
 
+const addFilesShare = ref(null)
 const manageFilesShare = ref(null)
 const replaceFileShare = ref(null)
 const cloneShareTarget = ref(null)
@@ -137,9 +139,16 @@ defineExpose({
 <template>
   <div>
     <ManageShareFilesModal
+      v-if="addFilesShare"
+      :share="addFilesShare"
+      mode="add"
+      @close="addFilesShare = null"
+      @done="loadShares"
+    />
+    <ManageShareFilesModal
       v-if="manageFilesShare"
       :share="manageFilesShare"
-      mode="add"
+      mode="manage"
       @close="manageFilesShare = null"
       @done="loadShares"
     />
@@ -290,10 +299,20 @@ defineExpose({
             <button
               v-if="!share.deleted"
               class="secondary icon-only"
-              @click="manageFilesShare = share"
+              @click="addFilesShare = share"
               title="Add files"
             >
               <FilePlus2 style="margin-right: 0" />
+            </button>
+            <button
+              v-if="!share.deleted"
+              class="secondary"
+              @click="manageFilesShare = share"
+              :disabled="share.status === 'pending'"
+              title="Manage files"
+            >
+              <Files />
+              Manage files
             </button>
             <button
               v-if="!share.deleted && share.files.length === 1 && allowFileReplacement == '1'"

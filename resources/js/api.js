@@ -942,6 +942,17 @@ export const addFilesToShare = async (shareId, uploadIds, filePaths) => {
   return data.data.share
 }
 
+export const removeFilesFromShare = async (shareId, fileIds) => {
+  const response = await fetchWithAuth(`${apiUrl}/api/shares/${shareId}/files`, {
+    method: 'DELETE',
+    headers: { ...addJsonHeader() },
+    body: JSON.stringify({ file_ids: fileIds })
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message)
+  return data.data.share
+}
+
 export const replaceShareFile = async (shareId, uploadId, filePath, name = null) => {
   const payload = { uploadIds: [uploadId], filePaths: { [uploadId]: filePath } }
   if (name) payload.name = name

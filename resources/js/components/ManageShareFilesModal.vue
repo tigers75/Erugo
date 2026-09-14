@@ -1,14 +1,14 @@
 <script setup>
 import { ref, watch, computed } from 'vue'
 import { uploadFileWithTus } from '../api'
-import { addFilesToShare, replaceShareFile } from '../api'
+import { addFilesToShare, removeFilesFromShare, replaceShareFile } from '../api'
 import { useToast } from 'vue-toastification'
-import { FilePlus2, RefreshCcw, X, Upload } from 'lucide-vue-next'
+import { FilePlus2, Files, RefreshCcw, Trash2, X, Upload } from 'lucide-vue-next'
 import { niceFileSize } from '../utils'
 
 const props = defineProps({
   share: { type: Object, required: true },
-  mode: { type: String, required: true }  // 'add' or 'replace'
+  mode: { type: String, required: true }  // 'add', 'replace', or 'manage'
 })
 const emit = defineEmits(['close', 'done'])
 
@@ -20,6 +20,8 @@ const progress = ref(0)         // 0-100 overall percentage
 const currentFileName = ref('')
 const fileIndex = ref(0)
 const error = ref(null)
+const selectedExistingFileIds = ref([])
+const deleting = ref(false)
 
 // Replace-mode rename state
 const keepOriginalName = ref(false)
@@ -29,6 +31,13 @@ const shareName = ref(props.share.name)
 const nameWithoutExtension = (filename) => filename.replace(/\.[^.]+$/, '')
 
 const canSubmit = computed(() => selectedFiles.value.length > 0 && !uploading.value)
+const busy = computed(() => uploading.value || deleting.value)
+const wouldDeleteAllFiles = computed(
+  () => selectedExistingFileIds.value.length >= props.share.files.length
+)
+const canDeleteSelected = computed(
+  () => selectedExistingFileIds.value.length > 0 && !wouldDeleteAllFiles.value && !deleting.value
+)
 
 const handleFileInput = (e) => {
   const raw = Array.from(e.target.files || [])
@@ -54,6 +63,40 @@ const removeFile = (index) => {
   selectedFiles.value.splice(index, 1)
   if (props.mode === 'replace' && selectedFiles.value.length === 0 && !keepOriginalName.value) {
     shareName.value = props.share.name
+  }
+}
+
+const deleteFiles = async (fileIds) => {
+  if (deleting.value || fileIds.length === 0) return
+  if (props.share.files.length - fileIds.length < 1) {
+    error.value = 'At least one file must remain. Delete the share instead.'
+    return
+  }
+
+  const count = fileIds.length
+  const confirmed = confirm(
+    `Permanently remove ${count} file${count > 1 ? 's' : ''} from this share? This action cannot be undone.`
+  )
+  if (!confirmed) return
+
+  deleting.value = true
+  error.value = null
+  try {
+    await removeFilesFromShare(props.share.id, fileIds)
+    toast.success(`${count} file${count > 1 ? 's' : ''} removed`)
+    emit('done')
+    emit('close')
+  } catch (err) {
+    error.value = err.message || 'Failed to remove files'
+    deleting.value = false
+  }
+}
+
+const toggleExistingFile = (fileId) => {
+  if (selectedExistingFileIds.value.includes(fileId)) {
+    selectedExistingFileIds.value = selectedExistingFileIds.value.filter((id) => id !== fileId)
+  } else {
+    selectedExistingFileIds.value.push(fileId)
   }
 }
 
@@ -113,16 +156,16 @@ const handleUpload = async () => {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="!uploading && emit('close')">
+  <div class="modal-backdrop" @click.self="!busy && emit('close')">
     <div class="modal-box">
       <div class="modal-header">
-        <component :is="mode === 'replace' ? RefreshCcw : FilePlus2" />
-        <h3>{{ mode === 'replace' ? 'Replace file' : 'Add files' }}</h3>
-        <button class="close-btn" @click="emit('close')" :disabled="uploading"><X /></button>
+        <component :is="mode === 'replace' ? RefreshCcw : mode === 'manage' ? Files : FilePlus2" />
+        <h3>{{ mode === 'replace' ? 'Replace file' : mode === 'manage' ? 'Manage files' : 'Add files' }}</h3>
+        <button class="close-btn" @click="emit('close')" :disabled="busy"><X /></button>
       </div>
 
       <!-- File picker -->
-      <div v-if="!uploading" class="picker-area">
+      <div v-if="mode !== 'manage' && !uploading" class="picker-area">
         <label class="file-label">
           <input
             type="file"
@@ -137,8 +180,35 @@ const handleUpload = async () => {
         </label>
       </div>
 
-      <!-- Selected file list -->
-      <div v-if="selectedFiles.length > 0 && !uploading" class="file-list">
+      <!-- Existing files: management mode -->
+      <div v-if="mode === 'manage'" class="existing-file-list">
+        <div v-for="file in share.files" :key="file.id" class="existing-file-item">
+          <input
+            type="checkbox"
+            :checked="selectedExistingFileIds.includes(file.id)"
+            :disabled="deleting"
+            @change="toggleExistingFile(file.id)"
+          />
+          <span class="file-name" :title="file.full_path ? `${file.full_path}/${file.name}` : file.name">
+            {{ file.name }}
+          </span>
+          <span class="file-size">{{ niceFileSize(file.size) }}</span>
+          <button
+            class="remove-btn"
+            :disabled="deleting || share.files.length <= 1"
+            title="Remove file"
+            @click="deleteFiles([file.id])"
+          >
+            <Trash2 />
+          </button>
+        </div>
+        <p v-if="share.files.length <= 1 || wouldDeleteAllFiles" class="last-file-warning">
+          At least one file must remain. Delete the share if you want to remove the last file.
+        </p>
+      </div>
+
+      <!-- Selected upload list -->
+      <div v-if="mode !== 'manage' && selectedFiles.length > 0 && !uploading" class="file-list">
         <div v-for="(item, idx) in selectedFiles" :key="idx" class="file-item">
           <span class="file-name" :title="item.path">{{ item.file.name }}</span>
           <span class="file-size">{{ niceFileSize(item.file.size) }}</span>
@@ -178,8 +248,17 @@ const handleUpload = async () => {
       <div v-if="error" class="error-msg">{{ error }}</div>
 
       <div class="modal-footer">
-        <button class="secondary" @click="emit('close')" :disabled="uploading">Cancel</button>
-        <button @click="handleUpload" :disabled="!canSubmit">
+        <button class="secondary" @click="emit('close')" :disabled="busy">Cancel</button>
+        <button
+          v-if="mode === 'manage'"
+          class="danger"
+          @click="deleteFiles(selectedExistingFileIds)"
+          :disabled="!canDeleteSelected"
+        >
+          <Trash2 />
+          Remove {{ selectedExistingFileIds.length }} selected file{{ selectedExistingFileIds.length === 1 ? '' : 's' }}
+        </button>
+        <button v-else @click="handleUpload" :disabled="!canSubmit">
           <Upload />
           {{ mode === 'replace' ? 'Replace' : 'Add files' }}
         </button>
@@ -223,7 +302,7 @@ const handleUpload = async () => {
     background: none; border: none; padding: 4px; cursor: pointer;
     display: flex; align-items: center; color: var(--panel-section-text-color); opacity: 0.6;
     &:hover { opacity: 1; }
-    &:disabled { cursor: not-allowed; }
+    &:disabled { cursor: not-allowed; opacity: 0.35; }
     svg { width: 1rem; height: 1rem; }
   }
 }
@@ -293,6 +372,54 @@ const handleUpload = async () => {
     &:hover { opacity: 1; }
     svg { width: 0.85rem; height: 0.85rem; }
   }
+}
+
+.existing-file-list {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.existing-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-section-background-color-alt);
+  border-radius: 6px;
+  padding: 8px 10px;
+
+  input[type="checkbox"] {
+    width: auto;
+    height: auto;
+    margin: 0;
+    flex-shrink: 0;
+  }
+
+  .file-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.85rem;
+    color: var(--panel-section-text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-size {
+    font-size: 0.75rem;
+    color: var(--panel-section-text-color);
+    opacity: 0.6;
+    white-space: nowrap;
+  }
+}
+
+.last-file-warning {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: #dc3545;
 }
 
 .rename-area {
