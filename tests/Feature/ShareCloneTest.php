@@ -269,4 +269,40 @@ class ShareCloneTest extends TestCase
         $cloneLongId = $response->json('data.share.long_id');
         $this->assertNotEquals($share->long_id, $cloneLongId);
     }
+
+    public function test_clone_recovers_legacy_files_from_existing_zip(): void
+    {
+        Queue::fake();
+
+        $owner = $this->makeUser();
+        $share = $this->makeShareWithFiles($owner, 2);
+        $shareDir = storage_path('app/shares/' . $share->path);
+        $zipPath = storage_path('app/shares/' . $share->path . '.zip');
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true);
+        foreach ($share->files as $file) {
+            $zip->addFile($shareDir . '/' . $file->name, $file->name);
+        }
+        $zip->close();
+
+        foreach ($share->files as $file) {
+            unlink($shareDir . '/' . $file->name);
+        }
+        rmdir($shareDir);
+
+        $response = $this->actingAs($owner, 'sanctum')
+            ->postJson("/api/shares/{$share->id}/clone")
+            ->assertStatus(200);
+
+        $clone = Share::with('files')->findOrFail($response->json('data.share.id'));
+        $this->assertEquals(2, $clone->files->count());
+
+        foreach ($clone->files as $file) {
+            $clonedPath = storage_path('app/shares/' . $clone->path . '/' . $file->name);
+            $this->assertFileExists($clonedPath);
+            $this->assertEquals(str_repeat('x', 512), file_get_contents($clonedPath));
+        }
+    }
+
 }
